@@ -5,7 +5,7 @@ import json
 
 device = 'cuda' if torch.cuda.is_available() else 'cpu'
 
-with open('santi.txt', "r", encoding = 'utf-8') as f:
+with open('/kaggle/working/my-transformer/santi.txt', "r", encoding = 'utf-8') as f:
     text = f.read()
 tokens = list(text.encode("utf-8"))
 vocab_size = 8000
@@ -14,12 +14,15 @@ batch_size = 128
 n_embd = 128
 n_head = 4
 layer_n = 3
-train_loop = 1000
+train_loop = 5000
+EXTERNAL_DROPOUT = 0.2
+STOCHASTIC_P = 0.0
+NORM_TYPE = 'layernorm'
 head_size = n_embd // n_head
 #----------BPE tokenizer----------
 
 # load merges
-with open(f'merges{vocab_size}.json', 'r') as f:
+with open(f'/kaggle/working/my-transformer/merges{vocab_size}.json', 'r') as f:
     merges_serializable = json.load(f)
 merges = {int(k): tuple(v) for k, v in merges_serializable.items()}
 
@@ -29,7 +32,7 @@ for idx, (p0, p1) in merges.items():
     vocab[idx] = vocab[p0] + vocab[p1]
 
 # load ids directly, skip BPE training
-with open(f'ids{vocab_size}.json', 'r') as f:
+with open(f'/kaggle/working/my-transformer/ids{vocab_size}.json', 'r') as f:
     ids = json.load(f)
 
 def merge(ids, pair, idx):
@@ -106,6 +109,19 @@ def rope(x):
     return x_rope #B, T, head_size
 
 class StochasticRMSNorm(nn.Module):
+    """
+    RMSNorm with stochastic feature masking during training.
+    Randomly masks features before computing RMS scale estimate.
+    Falls back to standard RMSNorm at inference.
+
+    Outperforms RMSNorm at p > 0.5 on small datasets.
+    Still underperforms LayerNorm (missing mean centering).
+
+    Args:
+        d (int): model dimension
+        p (float): mask probability, default 0.1
+        eps (float): stability term, default 1e-8
+    """
     def __init__(self, d, p=0.1, eps=1e-8):
         super().__init__()
         self.gamma = nn.Parameter(torch.ones(d))
@@ -189,13 +205,25 @@ class Block(nn.Module):
         super().__init__()
         self.att = MultiHead(n_head, head_size, n_embd)
         self.ffn = FeedFoward(n_embd)
-        self.drop = nn.Dropout(p=0.2)
-        self.ln1 = RMSNorm(n_embd)
-        self.ln2 = RMSNorm(n_embd)
+        self.ln_1 = nn.LayerNorm(n_embd)
+        self.ln_2 = nn.LayerNorm(n_embd)
+        self.drop = nn.Dropout(p=EXTERNAL_DROPOUT)
+        self.rms1 = RMSNorm(n_embd)
+        self.rms2 = RMSNorm(n_embd)
+        self.storms1 = StochasticRMSNorm(n_embd, p=STOCHASTIC_P)
+        self.storms2 = StochasticRMSNorm(n_embd, p=STOCHASTIC_P)
 
-    def forward(self,x): # x = B, T, n_embd 
-        x = x + self.att(self.ln1(x)) # residual + attention 
-        x = x + self.ffn(self.ln2(x)) # residual + ffn
+    def get_norm(self, norm, x, position):
+        if norm == 'rms':
+            return self.rms1(x) if position == 1 else self.rms2(x)
+        elif norm == 'stochastic_rms':
+            return self.storms1(x) if position == 1 else self.storms2(x)
+        elif norm == 'layernorm':
+            return self.ln_1(x) if position == 1 else self.ln_2(x)
+
+    def forward(self, x):
+        x = x + self.drop(self.att(self.get_norm(NORM_TYPE, x, 1)))
+        x = x + self.drop(self.ffn(self.get_norm(NORM_TYPE, x, 2)))
         return x
 
 #----------My_transmodel----------
