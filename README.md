@@ -41,14 +41,48 @@ unique chars:       3,648
 
 ## Normalization Experiment — StochasticRMSNorm
 
-Explored a custom norm layer that applies stochastic feature masking during the RMS computation, making the scale estimate itself noisy during training.
+Tested three normalization methods at matched total dropout (0.2):
 
-| Config | internal p | external dropout | total dropout | Val best | Val @2800 |
-|---|---|---|---|---|---|
-| LayerNorm | - | 0.2 | 0.2 | 7.22 @800 | 7.95 |
-| StochasticRMS | 0.1 | 0.1 | 0.2 | 7.20 @600 | 8.99 |
-| RMSNorm | - | 0.2 | 0.2 | 7.21 @600 | 9.01 |
-| StochasticRMS | 0.3 | 0.1 | 0.4 | 7.19 @600 | 8.93 |
-| RMSNorm | - | 0.4 | 0.4 | 7.18 @600 | 9.02 |
+| Config | internal p | external dropout | total |
+|---|---|---|---|
+| LayerNorm | - | 0.2 | 0.2 |
+| StochasticRMSNorm | 0.1 | 0.1 | 0.2 |
+| RMSNorm | - | 0.2 | 0.2 |
 
-**Findings:** LayerNorm dominates overall. At higher dropout, StochasticRMSNorm begins to outperform standard RMSNorm — the internal masking adds regularization value beyond what external dropout alone provides. All configs overfit after ~600-800 steps, consistent with small-data regime.
+**Convergence speed (steps → train loss):**
+<img width="2940" height="1666" alt="step_vs_train_loss_convergence" src="https://github.com/user-attachments/assets/6923a921-9ecb-41e0-b44f-64ce5e92f4a4" />
+
+**Generalization (train loss → val loss):**
+<img width="2880" height="1536" alt="train_vs_val_loss_norm_comparison" src="https://github.com/user-attachments/assets/10937308-8836-42c4-8b8a-8306ca94f74b" />
+**Findings:** StochasticRMSNorm converges fastest across all steps. Generalization performance is similar across all three configs — the val loss curves are close when compared at matched train loss. Whether the convergence advantage comes from the internal masking mechanism or the different distribution of regularization (internal vs external) remains unresolved. `eps=1e-8` is identical across all implementations, ruling it out as a confound.
+
+**note:** StochasticRMSNorm shows faster training convergence, but whether this reflects a genuine optimization advantage or an artifact of the internal/external regularization split remains unconfirmed.
+
+**StochasticRMSNorm:**
+```python
+class StochasticRMSNorm(nn.Module):
+    """
+    RMSNorm with stochastic feature masking during training.
+    Randomly masks features before computing RMS scale estimate.
+    Falls back to standard RMSNorm at inference.
+    Args:
+        d (int): model dimension
+        p (float): mask probability, default 0.1
+        eps (float): stability term, default 1e-8
+    """
+    def __init__(self, d, p=0.1, eps=1e-8):
+        super().__init__()
+        self.gamma = nn.Parameter(torch.ones(d))
+        self.p = p
+        self.eps = eps
+
+    def forward(self, x):
+        if self.training:
+            mask = torch.bernoulli(torch.ones_like(x) * (1 - self.p))
+            rms = (x * mask).pow(2).sum(-1, keepdim=True)
+            rms = rms / mask.sum(-1, keepdim=True).clamp(min=1)
+            rms = rms.sqrt()
+        else:
+            rms = x.pow(2).mean(-1, keepdim=True).sqrt()
+        return self.gamma * x / (rms + self.eps)
+```
