@@ -1,6 +1,6 @@
 import json
 
-with open('santi.txt', "r", encoding = 'utf-8') as f:
+with open('/Users/lifat/ml/my_trans/zh_wiki_clean.txt', "r", encoding = 'utf-8') as f:
     text = f.read()
 tokens = list(text.encode("utf-8"))
 
@@ -42,11 +42,11 @@ merges, ids = bpe_train(tokens, vocab_size)
 merges_serialzable = {str()}
 vocab = {idx: bytes([idx]) for idx in range(256)}
 merges_serializable = {str(k): list(v) for k, v in merges.items()}
-with open('merges8000.json', 'w') as f:
+with open(f'zh_wiki_merges{vocab_size}.json', 'w') as f:
     json.dump(merges_serializable, f)
 
 # save encoded ids
-with open('ids8000.json', 'w') as f:
+with open(f'zh_wiki_ids{vocab_size}.json', 'w') as f:
     json.dump(ids, f)
 
 print("saved!")
